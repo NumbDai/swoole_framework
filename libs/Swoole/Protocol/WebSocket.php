@@ -1,5 +1,5 @@
 <?php
-namespace Swoole\Network\Protocol;
+namespace Swoole\Protocol;
 use Swoole;
 
 abstract class WebSocket extends HttpServer
@@ -37,6 +37,8 @@ abstract class WebSocket extends HttpServer
     public $max_connect = 10000;
     public $max_frame_size = 2097152; //数据包最大长度，超过此长度会被认为是非法请求
     public $heart_time = 600; //600s life time
+	
+	public $keepalive = true;
 
     /**
      * Do the handshake.
@@ -91,45 +93,61 @@ abstract class WebSocket extends HttpServer
         }
         $this->log('clean connections');
     }
+
     abstract function onMessage($client_id, $message);
 
     /**
-     * 握手建立连接
+     * Called on WebSocket connection established.
+     *
+     * @param $client_id
+     * @param $request
      */
-    function createConnection($client_id, $data)
+    function onWsConnect($client_id, $request)
     {
-        $st = $this->checkData($client_id, $data);
-        if ($st === self::ST_ERROR)
-        {
-            $this->log("CLOSE. http header[$data] error.");
-            $this->server->close($client_id);
-            return false;
-        }
-        elseif ($st === self::ST_WAIT)
-        {
-            return true;
-        }
+        $this->log("WebSocket connection #$client_id is connected");
+    }
 
-        $request = $this->requests[$client_id];
-        if (empty($request))
-        {
-            $this->log("CLOSE. request object not found.");
-            $this->server->close($client_id);
-            return false;
-        }
-
-        $response = new Swoole\Response;
+    /**
+     * Produce response for WebSocket request.
+     *
+     * @param Swoole\Request $request
+     * @return Swoole\Response
+     */
+    function onWebSocketRequest(Swoole\Request $request)
+    {
+        $response = $this->currentResponse = new Swoole\Response();
         $this->doHandshake($request, $response);
-        $this->response($client_id, $request, $response);
 
-        $conn = array('header' => $request->head, 'time' => time(), 'buffer' => '');
-        $this->connections[$client_id] = $conn;
+        return $response;
+    }
 
-        if (count($this->connections) > $this->max_connect)
+    function onRequest(Swoole\Request $request)
+    {
+        return $request->isWebSocket() ? $this->onWebSocketRequest($request) : parent::onRequest($request);
+    }
+
+    /**
+     * Clean and fire onWsConnect().
+     *
+     * @param $client_id
+     * @param Swoole\Request $request
+     * @param Swoole\Response $response
+     */
+    function afterResponse(Swoole\Request $request, Swoole\Response $response)
+    {
+        if ($request->isWebSocket())
         {
-            $this->cleanConnection();
+            $conn = array('header' => $request->head, 'time' => time(), 'buffer' => '');
+            $this->connections[$request->fd] = $conn;
+
+            if (count($this->connections) > $this->max_connect)
+            {
+                $this->cleanConnection();
+            }
+
+            $this->onWsConnect($request->fd, $request);
         }
-        return true;
+        parent::afterResponse($request, $response);
     }
 
     /**
@@ -140,14 +158,12 @@ abstract class WebSocket extends HttpServer
      */
     public function onReceive($server, $fd, $from_id, $data)
     {
-        //$this->log("received data. length = ".strlen($data));
         //未连接
         if (!isset($this->connections[$fd]))
         {
-            $this->createConnection($fd, $data);
-            return;
+            $this->log("[{$fd}] received data: $data. length = ".strlen($data));
+            return parent::onReceive($server,$fd, $from_id, $data);
         }
-        //file_put_contents('./websocket.log', $data, FILE_APPEND);
         do
         {
             //新的请求
@@ -370,11 +386,12 @@ abstract class WebSocket extends HttpServer
      */
     function opcodeSwitch($client_id, &$ws)
     {
+        $this->log("[$client_id] opcode={$ws['opcode']}");
         switch($ws['opcode'])
         {
             case self::OPCODE_BINARY_FRAME:
             case self::OPCODE_TEXT_FRAME:
-                if(0x1 === $ws['fin'])
+                if (0x1 === $ws['fin'])
                 {
                     $this->onMessage($client_id, $ws);
                 }
@@ -388,7 +405,7 @@ abstract class WebSocket extends HttpServer
                 $message = &$ws['message'];
                 if (0x0  === $ws['fin'] or 0x7d  <  $ws['length'])
                 {
-                    $this->close($client_id, self::CLOSE_PROTOCOL_ERROR);
+                    $this->close($client_id, self::CLOSE_PROTOCOL_ERROR, "ping error");
                     break;
                 }
                 $this->connections[$client_id]['time'] = time();
@@ -396,17 +413,17 @@ abstract class WebSocket extends HttpServer
                 break;
 
             case self::OPCODE_PONG:
-                if(0 === $ws['fin'])
+                if (0 === $ws['fin'])
                 {
-                    $this->close($client_id, self::CLOSE_PROTOCOL_ERROR);
+                    $this->close($client_id, self::CLOSE_PROTOCOL_ERROR, "pong? server cannot pong.");
                 }
                 break;
 
             case self::OPCODE_CONNECTION_CLOSE:
                 $length = &$ws['length'];
-                if(1 === $length or 0x7d < $length)
+                if (1 === $length or 0x7d < $length)
                 {
-                    $this->close($client_id, self::CLOSE_PROTOCOL_ERROR);
+                    $this->close($client_id, self::CLOSE_PROTOCOL_ERROR, "client active close");
                     break;
                 }
                 $code   = self::CLOSE_NORMAL;
@@ -466,6 +483,7 @@ abstract class WebSocket extends HttpServer
     {
         $this->send($client_id, pack('n', $code).$reason, self::OPCODE_CONNECTION_CLOSE);
         $this->log("server close connection[$client_id]. reason: $reason, OPCODE = $code");
+        unset($this->ws_list[$client_id], $this->connections[$client_id], $this->requests[$client_id]);
         return $this->server->close($client_id);
     }
 }

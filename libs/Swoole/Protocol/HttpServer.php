@@ -1,5 +1,5 @@
 <?php
-namespace Swoole\Network\Protocol;
+namespace Swoole\Protocol;
 
 use Swoole;
 
@@ -10,12 +10,15 @@ use Swoole;
  * @package Swoole
  * @subpackage net.protocol
  */
-class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Server\Protocol
+class HttpServer extends Swoole\Protocol\WebServer implements  Swoole\IFace\Protocol
 {
-    private $swoole_server;
+    /**
+     * 开启异步服务，启用后onRequest将不再直接发送response到浏览器
+     * @var bool
+     */
+    public $async = false;
 
-    public $onRequest;
-
+    protected $swoole_server;
     protected $buffer_header = array();
     protected $buffer_maxlen = 65535; //最大POST尺寸，超过将写文件
 
@@ -49,7 +52,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
             Swoole\Console::changeUser($this->config['server']['user']);
         }
 
-        if (isset($this->config['server']['process_rename']))
+        if ($this->server instanceof Swoole\Network\Server and isset($this->config['server']['process_rename']))
         {
             global $argv;
             if ($worker_id >= $serv->setting['worker_num'])
@@ -61,6 +64,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
                 Swoole\Console::setProcessName('php '.$argv[0].': worker');
             }
         }
+
         Swoole\Error::$echo_html = true;
         $this->swoole_server = $serv;
         Swoole::$php->server = $this;
@@ -105,7 +109,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
             //HTTP结束符
             $ret = strpos($http_data, self::HTTP_EOF);
             //没有找到EOF，继续等待数据
-            if($ret === false)
+            if ($ret === false)
             {
                 return false;
             }
@@ -140,16 +144,16 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
 
     function checkPost($request)
     {
-        if(isset($request->head['Content-Length']))
+        if (isset($request->head['Content-Length']))
         {
             //超过最大尺寸
-            if(intval($request->head['Content-Length']) > $this->config['access']['post_maxsize'])
+            if (intval($request->head['Content-Length']) > $this->config['access']['post_maxsize'])
             {
                 $this->log("checkPost fail. post_data is too long.");
                 return self::ST_ERROR;
             }
             //不完整，继续等待数据
-            if(intval($request->head['Content-Length']) > strlen($request->body))
+            if (intval($request->head['Content-Length']) > strlen($request->body))
             {
                 return self::ST_WAIT;
             }
@@ -207,7 +211,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
      * @param $client_id
      * @param $from_id
      * @param $data
-     * @return unknown_type
+     * @return null
      */
     function onReceive($serv, $client_id, $from_id, $data)
     {
@@ -218,10 +222,10 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
             //错误的请求
             case self::ST_ERROR;
                 $this->server->close($client_id);
-                return true;
+                return;
             //请求不完整，继续等待
             case self::ST_WAIT:
-                return true;
+                return;
             default:
                 break;
         }
@@ -229,24 +233,39 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
         //开始处理
         $request = $this->requests[$client_id];
 	    $info = $serv->connection_info($client_id);
-
-	    $_SERVER['REMOTE_ADDR'] = $info['remote_ip'];
+        $request->remote_ip = $info['remote_ip'];
 	    $_SERVER['SWOOLE_CONNECTION_INFO'] = $info;
 
         $this->parseRequest($request);
         $request->fd = $client_id;
         $this->currentRequest = $request;
-        //处理请求，产生response对象
-        $response = $this->onRequest($request);
-        //发送response
-        $this->response($client_id, $request, $response);
-        if(!$this->keepalive or $response->head['Connection'] == 'close')
+        if ($this->async)
         {
-            $this->server->close($client_id);
+            $this->onAsyncRequest($request);
+        }
+        else
+        {
+            //处理请求，产生response对象
+            $response = $this->onRequest($request);
+            //发送response
+            $this->response($request, $response);
+        }
+    }
+
+    function onAsyncRequest(Swoole\Request $request)
+    {
+        throw new \Exception(__METHOD__." is an abstract method.");
+    }
+
+    function afterResponse(Swoole\Request $request, Swoole\Response $response)
+    {
+        if (!$this->keepalive or $response->head['Connection'] == 'close')
+        {
+            $this->server->close($request->fd);
         }
         $request->unsetGlobal();
         //清空request缓存区
-        unset($this->requests[$client_id]);
+        unset($this->requests[$request->fd]);
         unset($request);
         unset($response);
     }
@@ -254,12 +273,12 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
     /**
      * 解析请求
      * @param $request Swoole\Request
-     * @return unknown_type
+     * @return null
      */
     function parseRequest($request)
     {
         $url_info = parse_url($request->meta['uri']);
-        $request->meta['request_time'] = time();
+        $request->time = time();
         $request->meta['path'] = $url_info['path'];
         if (isset($url_info['fragment'])) $request->meta['fragment'] = $url_info['fragment'];
         if (isset($url_info['query']))
@@ -280,11 +299,11 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
 
     /**
      * 发送响应
-     * @param $client_id
      * @param $request Swoole\Request
      * @param $response Swoole\Response
+     * @return bool
      */
-    function response($client_id, Swoole\Request $request, Swoole\Response $response)
+    function response(Swoole\Request $request, Swoole\Response $response)
     {
         if (!isset($response->head['Date']))
         {
@@ -308,8 +327,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
         if ($this->expire and $response->http_status == 304)
         {
             $out = $response->getHeader();
-            $this->server->send($client_id, $out);
-            return;
+            return $this->server->send($request->fd, $out);
         }
         //压缩
         if ($this->gzip)
@@ -318,10 +336,18 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
             $response->body = gzdeflate($response->body, $this->config['server']['gzip_level']);
         }
         $out = $response->getHeader().$response->body;
-        $this->server->send($client_id, $out);
+        $ret = $this->server->send($request->fd, $out);
+        $this->afterResponse($request, $response);
+        return $ret;
     }
 
-    function http_error($code, Swoole\Response $response, $content = '')
+    /**
+     * 发生了http错误
+     * @param                 $code
+     * @param Swoole\Response $response
+     * @param string          $content
+     */
+    function httpError($code, Swoole\Response $response, $content = '')
     {
         $response->send_http_status($code);
         $response->head['Content-Type'] = 'text/html';
@@ -354,7 +380,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
         }
         $this->currentResponse->send_http_status(500);
         $this->currentResponse->body = $message;
-        $this->response($this->currentRequest->fd, $this->currentRequest, $this->currentResponse);
+        $this->response($this->currentRequest, $this->currentResponse);
     }
 
     /**
@@ -379,11 +405,11 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
         /* 动态脚本 */
         elseif (isset($this->dynamic_ext[$request->ext_name]) or empty($ext_name))
         {
-            $this->process_dynamic($request, $response);
+            $this->processDynamic($request, $response);
         }
         else
         {
-            $this->http_error(404, $response, "Http Not Found({($request->meta['path']})");
+            $this->httpError(404, $response, "Http Not Found({($request->meta['path']})");
         }
         return $response;
     }
@@ -399,7 +425,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
         /* 检测是否拒绝访问 */
         if (isset($this->deny_dir[$path[0]]))
         {
-            $this->http_error(403, $response, "服务器拒绝了您的访问({$request->meta['path']})");
+            $this->httpError(403, $response, "服务器拒绝了您的访问({$request->meta['path']})");
             return true;
         }
         /* 是否静态目录 */
@@ -465,7 +491,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
      * @param $response
      * @return unknown_type
      */
-    function process_dynamic($request, $response)
+    function processDynamic(Swoole\Request $request, Swoole\Response $response)
     {
         $path = $this->document_root . '/' . $request->meta['path'];
         if (is_file($path))
@@ -487,7 +513,7 @@ class HttpServer extends Swoole\Network\Protocol\WebServer implements Swoole\Ser
         }
         else
         {
-            $this->http_error(404, $response, "页面不存在({$request->meta['path']})！");
+            $this->httpError(404, $response, "页面不存在({$request->meta['path']})！");
         }
     }
 }

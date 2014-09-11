@@ -1,5 +1,6 @@
 <?php
 namespace Swoole;
+
 class Console
 {
     static function getOpt($cmd)
@@ -23,6 +24,11 @@ class Console
      */
     static function changeUser($user)
     {
+		if (!function_exists('posix_getpwnam'))
+		{
+			trigger_error(__METHOD__.": require posix extension.");
+			return;
+		}
         $user = posix_getpwnam($user);
         if($user)
         {
@@ -43,7 +49,7 @@ class Console
         }
         else
         {
-            trigger_error("setProcessName failed. require cli_set_process_title or swoole_set_process_name.", E_WARNING);
+            trigger_error(__METHOD__." failed. require cli_set_process_title or swoole_set_process_name.");
         }
     }
 }

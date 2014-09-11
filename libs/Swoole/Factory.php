@@ -1,24 +1,28 @@
 <?php
 namespace Swoole;
 
+/**
+ * Class Factory
+ * @package Swoole
+ * @method static getCache
+ */
 class Factory
 {
-    protected static $pool;
-
-	static function __callStatic($func, $params)
-	{
-        $id = $params[0];
-        if(empty(self::$pool[$id]))
+    public static function __callStatic($func, $params)
+    {
+        $resource_id = empty($params[0]) ? 'master' : $params[0];
+        $resource_type = strtolower(substr($func, 3));
+        if (empty(\Swoole::$php->config[$resource_type][$resource_id]))
         {
-            $objectType = substr($func, 3);
-            $config = \Swoole::getInstance()->config[strtolower($objectType)][$id];
-            if(empty($objectType) or empty($config['type']))
-            {
-                throw new \Exception("config error.$objectType/$id not found");
-            }
-            $class = '\\Swoole\\'.$objectType.'\\'.$config['type'];
-            self::$pool[$id] = new $class($config);
+            throw new FactoryException(__CLASS__.": resource[{$resource_type}/{$resource_id}] not found.");
         }
-        return self::$pool[$id];
-	}
+        $config = \Swoole::$php->config[$resource_type][$resource_id];
+        $class = '\\Swoole\\'.ucfirst($resource_type).'\\' . $config['type'];
+        return new $class($config);
+    }
+}
+
+class FactoryException extends \Exception
+{
+
 }

@@ -1,11 +1,12 @@
 <?php
-namespace Swoole\Network;
+namespace Swoole\Protocol;
+use Swoole;
 
 /**
  * 协议基类，实现一些公用的方法
- * @package Swoole\Network
+ * @package Swoole\Protocol
  */
-class Protocol
+abstract class Base implements Swoole\IFace\Protocol
 {
     public $default_port;
     public $default_host;
@@ -31,6 +32,22 @@ class Protocol
     function setLogger($log)
     {
         $this->log = $log;
+    }
+
+    function run($array)
+    {
+        \Swoole\Error::$echo_html = true;
+        $this->server->run($array);
+    }
+
+    function setConfigJS($config)
+    {
+
+    }
+
+    function daemonize()
+    {
+        $this->server->daemonize();
     }
 
     /**

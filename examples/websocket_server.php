@@ -3,13 +3,25 @@ define('DEBUG', 'on');
 define("WEBPATH", str_replace("\\","/", __DIR__));
 require __DIR__ . '/../libs/lib_config.php';
 
-class WebSocket extends Swoole\Network\Protocol\WebSocket
+class WebSocket extends Swoole\Protocol\WebSocket
 {
+    protected $message;
+
+    /**
+     * @param     $serv swoole_server
+     * @param int $worker_id
+     */
     function onStart($serv, $worker_id = 0)
     {
-        //$serv->addTimer(1000);
+        Swoole::$php->router(array($this, 'router'));
         parent::onStart($serv, $worker_id);
     }
+
+    function router()
+    {
+        var_dump($this->message);
+    }
+
     /**
      * 下线时，通知所有人
      */
@@ -21,14 +33,24 @@ class WebSocket extends Swoole\Network\Protocol\WebSocket
         parent::onClose($serv, $client_id, $from_id);
     }
 
+    function onMessage_mvc($client_id, $ws)
+    {
+        $this->log("onMessage: ".$client_id.' = '.$ws['message']);
+
+        $this->message = $ws['message'];
+        $response = Swoole::$php->runMVC();
+
+        $this->send($client_id, $response);
+        //$this->broadcast($client_id, $ws['message']);
+    }
+
     /**
      * 接收到消息时
-     * @see WSProtocol::onMessage()
      */
     function onMessage($client_id, $ws)
     {
         $this->log("onMessage: ".$client_id.' = '.$ws['message']);
-        $this->send($client_id, "Server: ".$ws['message']);
+        $this->send($client_id, 'Server: '.$ws['message']);
 		//$this->broadcast($client_id, $ws['message']);
     }
 
@@ -41,11 +63,6 @@ class WebSocket extends Swoole\Network\Protocol\WebSocket
                 $this->send($clid, $msg);
             }
         }
-    }
-
-    function onTimer($serv, $interval)
-    {
-        echo "timer $interval\n";
     }
 }
 
@@ -63,11 +80,14 @@ $AppSvr->setLogger(new \Swoole\Log\EchoLog(true)); //Logger
  * SelectTCP 使用select做事件循环，支持windows平台
  * EventTCP 使用libevent，需要安装libevent扩展
  */
-$server = new \Swoole\Network\Server('0.0.0.0', 9503);
+$enable_ssl = false;
+$server = new \Swoole\Network\Server('0.0.0.0', 9443, $enable_ssl);
 $server->setProtocol($AppSvr);
 //$server->daemonize(); //作为守护进程
 $server->run(array(
     'worker_num' => 1,
+    'ssl_key_file' => __DIR__.'/ssl/ssl.key',
+    'ssl_cert_file' => __DIR__.'/ssl/ssl.crt',
     //'max_request' => 1000,
     //'ipc_mode' => 2,
     //'heartbeat_check_interval' => 40,

@@ -1,9 +1,8 @@
 <?php
-namespace Swoole\Network\Protocol;
-
+namespace Swoole\Protocol;
 use Swoole;
 
-class WebServer extends Swoole\Network\Protocol
+abstract class WebServer extends Base
 {
     const SOFTWARE = "SwooleFramework";
     public $config = array();
@@ -55,6 +54,20 @@ class WebServer extends Swoole\Network\Protocol
         $this->apps_path = $path;
     }
 
+    /**
+     * 得到请求对象
+     * @param $fd
+     * @return Swoole\Request
+     */
+    function getRequest($fd)
+    {
+        return $this->requests[$fd];
+    }
+
+    /**
+     * 从ini文件中加载配置
+     * @param $ini_file
+     */
     function loadSetting($ini_file)
     {
         if (!is_file($ini_file)) exit("Swoole AppServer配置文件错误($ini_file)\n");
@@ -130,18 +143,22 @@ class WebServer extends Swoole\Network\Protocol
         }
         if ($opt['m'] == 'fastcgi')
         {
-            $svr = new Swoole\Network\Protocol\AppFPM();
+            $protocol = new Swoole\Protocol\AppFPM();
         }
         else
         {
-            $svr = new Swoole\Network\Protocol\AppServer();
+            $protocol = new Swoole\Protocol\AppServer();
         }
         if ($ini_file)
         {
-            $svr->loadSetting($ini_file); //加载配置文件
+            $protocol->loadSetting($ini_file); //加载配置文件
         }
-        $svr->default_port = $opt['p'];
-        $svr->default_host = $opt['h'];
-        return $svr;
+        $protocol->default_port = $opt['p'];
+        $protocol->default_host = $opt['h'];
+
+        $server = Swoole\Network\Server::autoCreate($protocol->default_host, $protocol->default_port);
+        $server->setProtocol($protocol);
+
+        return $protocol;
     }
 }

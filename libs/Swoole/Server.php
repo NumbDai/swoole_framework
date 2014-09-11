@@ -1,16 +1,12 @@
 <?php
 namespace Swoole;
+use Swoole;
 
 abstract class Server implements Server\Driver
 {
-    /**
-     * @var Server\Protocol
-     */
-    public $protocols = array();
-
     public $setting = array();
     /**
-     * @var Server\Protocol
+     * @var Swoole\IFace\Protocol
      */
     public $protocol;
 	public $host = '0.0.0.0';
@@ -42,9 +38,9 @@ abstract class Server implements Server\Driver
 		$this->timeout = $timeout;
 	}
 
-    function addListener($protocol, $port)
+    function addListener($host, $port, $type)
     {
-        if(!($protocol instanceof \Swoole\Server\Protocol))
+        if (!($this->protocol instanceof Swoole\Network\Server))
         {
             throw new \Exception("addListener must use swoole extension.");
         }
@@ -52,13 +48,14 @@ abstract class Server implements Server\Driver
 
 	/**
 	 * 应用协议
-	 * @return unknown_type
+     * @param $protocol Swoole\Protocol\Base
+	 * @return null
 	 */
 	function setProtocol($protocol)
 	{
-        if(!($protocol instanceof \Swoole\Server\Protocol))
+        if (!($protocol instanceof Swoole\IFace\Protocol))
         {
-             throw new \Exception("The protocol is not instanceof \\Swoole\\Server\\Protocol");
+             throw new \Exception("The protocol is not instanceof \\Swoole\\IFace\\Protocol");
         }
 		$this->protocol = $protocol;
         $protocol->server = $this;
@@ -71,7 +68,11 @@ abstract class Server implements Server\Driver
         return array('remote_port' => $port, 'remote_ip' => $ip);
     }
 
-	function accept()
+    /**
+     * 接受连接
+     * @return bool|int
+     */
+    function accept()
 	{
 		$client_socket = stream_socket_accept($this->server_sock, 0);
         //惊群
@@ -98,19 +99,18 @@ abstract class Server implements Server\Driver
 
     function spawn($setting)
     {
-        if (!extension_loaded('pcntl'))
-        {
-            trigger_error(__METHOD__." require pcntl extension!");
-            return;
-        }
         $num = 0;
         if (isset($setting['worker_num']))
         {
-            $num = (int) $setting['worker_num'] - 1;
+            $num = (int) $setting['worker_num'];
         }
         if ($num < 2)
         {
             return;
+        }
+		if (!extension_loaded('pcntl'))
+        {
+            die(__METHOD__." require pcntl extension!");
         }
         $pids = array();
         for($i=0; $i<$num; $i++)
@@ -153,7 +153,33 @@ abstract class Server implements Server\Driver
 
     function daemonize()
     {
+        if (!function_exists('pcntl_fork'))
+        {
+            throw new \Exception(__METHOD__.": require pcntl_fork.");
+        }
+        $pid = pcntl_fork();
+        if ($pid == -1) {
+            die("fork(1) failed!\n");
+        }
+        elseif ($pid > 0)
+        {
+            //让由用户启动的进程退出
+            exit(0);
+        }
 
+        //建立一个有别于终端的新session以脱离终端
+        posix_setsid();
+
+        $pid = pcntl_fork();
+        if ($pid == -1)
+        {
+            die("fork(2) failed!\n");
+        }
+        elseif ($pid > 0)
+        {
+            //父进程退出, 剩下子进程成为最终的独立进程
+            exit(0);
+        }
     }
 
 	function onError($errno,$errstr)
@@ -165,7 +191,7 @@ abstract class Server implements Server\Driver
 	 * @param $uri
 	 * @return unknown_type
 	 */
-	function create($uri,$block=0)
+	function create($uri, $block=0)
 	{
 		//UDP
 		if($uri{0}=='u') $socket = stream_socket_server($uri,$errno,$errstr,STREAM_SERVER_BIND);
